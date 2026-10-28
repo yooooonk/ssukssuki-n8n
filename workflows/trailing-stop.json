@@ -1,0 +1,687 @@
+{
+  "id": "trailingStop0001",
+  "name": "추적손절 알림",
+  "active": true,
+  "nodes": [
+    {
+      "id": "n1b",
+      "name": "평일 15:35",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        100
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "35 15 * * 1-5"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "n2",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "n2b",
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        220,
+        200
+      ],
+      "executeOnce": true,
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "c1",
+              "name": "threshold",
+              "value": -0.1,
+              "type": "number"
+            },
+            {
+              "id": "c2",
+              "name": "kis_base",
+              "value": "https://openapivts.koreainvestment.com:29443",
+              "type": "string"
+            },
+            {
+              "id": "c4",
+              "name": "sheet_url",
+              "value": "https://docs.google.com/spreadsheets/d/__SHEET_ID__",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "notes": "threshold: 고점 대비 손절 기준 (-0.10 = -10%)\nkis_base: 모의 openapivts...:29443 / 실전 openapi...:9443"
+    },
+    {
+      "id": "n2c",
+      "name": "KIS 토큰",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        200
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.kis_base }}/oauth2/tokenP",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"grant_type\":\"client_credentials\"}",
+        "options": {}
+      },
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "kisTokenBody0001",
+          "name": "KIS token body"
+        }
+      }
+    },
+    {
+      "id": "n3",
+      "name": "Get active rows",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        880,
+        200
+      ],
+      "executeOnce": true,
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "__SHEET_ID__",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "시트1"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "status",
+              "lookupValue": "active"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleApi": {
+          "id": "googleSaCred0001",
+          "name": "Google Service Account"
+        }
+      }
+    },
+    {
+      "id": "n4",
+      "name": "Prepare",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        200
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// 시트 행 정리 (종목코드 빈 행은 건너뜀)\nconst now = DateTime.now().setZone('Asia/Seoul');\nconst parseDate = v => {\n  let d = null;\n  if (typeof v === 'number') {\n    d = DateTime.fromObject({ year: 1899, month: 12, day: 30 }, { zone: 'Asia/Seoul' }).plus({ days: v });\n  } else {\n    const m = String(v ?? '').match(/(\\d{4})\\D+(\\d{1,2})\\D+(\\d{1,2})/);\n    if (m) d = DateTime.fromObject({ year: +m[1], month: +m[2], day: +m[3] }, { zone: 'Asia/Seoul' });\n  }\n  return d && d.isValid ? d : null;\n};\nreturn $input.all()\n  .map((item, i) => ({ row: item.json, i }))\n  .filter(({ row }) => String(row.ticker ?? '').trim() !== '')\n  .map(({ row, i }) => {\n    const d = parseDate(row.buy_date);\n    const t = parseDate(row.track_from);\n    // 고점 추적 시작일 = 매수일과 track_from(기준점 재설정일) 중 늦은 날\n    const base = d && t ? (t > d ? t : d) : d;\n    const code = String(row.ticker).trim().toUpperCase().replace(/\\.(KS|KQ)$/, '');\n    return {\n      json: {\n        ...row,\n        code,\n        code_ok: /^[0-9A-Z]{6}$/.test(code),\n        buy_date_iso: d ? d.toISODate() : null,\n        track_from_iso: t ? t.toISODate() : '',\n        base_iso: base ? base.toISODate() : null,\n        // 전일 대비 계산용으로 기준일 2주 전부터 조회\n        date_from: base ? base.minus({ days: 14 }).toFormat('yyyyMMdd') : '',\n        date_to: now.toFormat('yyyyMMdd'),\n      },\n      pairedItem: { item: i },\n    };\n  });"
+      }
+    },
+    {
+      "id": "n5",
+      "name": "KIS 일봉 조회",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        200
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('Config').first().json.kis_base }}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "FID_COND_MRKT_DIV_CODE",
+              "value": "J"
+            },
+            {
+              "name": "FID_INPUT_ISCD",
+              "value": "={{ $json.code }}"
+            },
+            {
+              "name": "FID_INPUT_DATE_1",
+              "value": "={{ $json.date_from }}"
+            },
+            {
+              "name": "FID_INPUT_DATE_2",
+              "value": "={{ $json.date_to }}"
+            },
+            {
+              "name": "FID_PERIOD_DIV_CODE",
+              "value": "D"
+            },
+            {
+              "name": "FID_ORG_ADJ_PRC",
+              "value": "0"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "authorization",
+              "value": "=Bearer {{ $('KIS 토큰').first().json.access_token }}"
+            },
+            {
+              "name": "tr_id",
+              "value": "FHKST03010100"
+            },
+            {
+              "name": "custtype",
+              "value": "P"
+            }
+          ]
+        },
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 1100
+            }
+          },
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "kisHeaders000001",
+          "name": "KIS headers"
+        }
+      }
+    },
+    {
+      "id": "n6",
+      "name": "Calculate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        200
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const cfg = $('Config').first().json;\nconst THRESHOLD = Number(cfg.threshold); // 예: -0.10\nconst row = $('Prepare').item.json;\nconst now = DateTime.now().setZone('Asia/Seoul');\nconst today = now.toISODate();\n\nconst num = x => { const n = Number(String(x ?? '').replace(/[,\\s원]/g, '')); return x === '' || x == null || isNaN(n) ? null : n; };\nconst out = {\n  row_number: row.row_number,\n  account: String(row.account || '').trim() || '미지정',\n  sub_account: String(row.sub_account || '').trim(),\n  qty: num(row.qty),\n  avg_price: num(row.avg_price),\n  ticker: row.ticker,\n  code: row.code,\n  name: row.name || row.ticker,\n  buy_date: row.buy_date_iso,\n  track_from: row.track_from_iso,\n  base_date: row.base_iso,\n  checked_at: now.toFormat('yyyy-MM-dd HH:mm'),\n  error: '',\n  warn: '',\n};\nif (!row.code_ok) return { json: { ...out, error: 'ticker 형식 오류 (예: 005930)' } };\nif (!row.buy_date_iso) return { json: { ...out, error: 'buy_date 형식 오류 (예: 2026-09-01)' } };\nif ($json.rt_cd !== '0') return { json: { ...out, error: `KIS: ${$json.msg1 || $json.message || '응답 오류'} (${$json.msg_cd || ''})` } };\n\nout.name = row.name || $json.output1?.hts_kor_isnm || row.ticker;\n// output2: 최신순. 장 마감(15:30) 전 실행이면 오늘 행은 장중 가격이므로 제외 → 항상 확정 종가만 사용\nconst marketClosed = now.hour * 60 + now.minute >= 15 * 60 + 30;\nconst rows = ($json.output2 || []).filter(x => x.stck_bsop_date && x.stck_clpr);\nconst all = rows\n  .map(x => ({ date: DateTime.fromFormat(x.stck_bsop_date, 'yyyyMMdd').toISODate(), close: Number(x.stck_clpr) }))\n  .filter(b => marketClosed || b.date < today)\n  .reverse(); // 오래된 → 최신\nconst bars = all.filter(b => b.date >= row.base_iso);\nif (!bars.length) return { json: { ...out, error: '추적 시작일 이후 확정 종가 없음' } };\n\n// API는 최대 100거래일. 추적 시작일이 그보다 오래되면 시트에 저장된 고점을 시작값으로 사용\nconst covered = rows.length < 100 || all[0].date <= row.base_iso;\nlet seed = null;\nif (!covered) {\n  const sp = num(row.peak_close), sd = String(row.peak_date || '');\n  // 저장된 고점이 조회 구간보다 이전일 때만 시작값으로 사용 (구간 안이면 bars에 이미 포함)\n  if (sp && sd >= row.base_iso) { if (sd < bars[0].date) seed = { date: sd, close: sp }; }\n  else out.warn = '추적 시작일이 100거래일 이전 → 고점 부정확할 수 있음 (peak_close/peak_date 수동 입력)';\n}\n\n// 날짜별 누적 고점 → 현재 손절권 구간이 시작된 날 계산\nlet peak = seed || bars[0];\nlet breachSince = '';\nfor (const b of bars) {\n  if (b.close > peak.close) peak = b;\n  const inBreach = b.close / peak.close - 1 <= THRESHOLD;\n  breachSince = inBreach ? (breachSince || b.date) : '';\n}\nconst last = bars[bars.length - 1];\nconst prev = all[all.length - 2]; // 전 거래일 (매수일 이전 포함)\nconst dd = last.close / peak.close - 1;\nconst stop = Math.round(peak.close * (1 + THRESHOLD));\n\nreturn {\n  json: {\n    ...out,\n    peak_close: peak.close,\n    peak_date: peak.date,\n    last_close: last.close,\n    last_date: last.date,\n    day_change: prev ? +((last.close / prev.close - 1) * 100).toFixed(2) : null,\n    drawdown: +(dd * 100).toFixed(2),\n    stop_price: stop,\n    stop_gap: +((stop / last.close - 1) * 100).toFixed(2), // 손절가까지 남은 % (음수=여유, 양수=이미 하회)\n    breached: dd <= THRESHOLD,\n    breach_since: breachSince,\n    new_breach: !!breachSince && breachSince === last.date,\n    // 손익 (수수료·세금 제외)\n    ...(out.qty && out.avg_price ? (() => {\n      const buy = out.qty * out.avg_price, ev = out.qty * last.close;\n      return {\n        buy_amount: Math.round(buy),\n        eval_amount: Math.round(ev),\n        pnl: Math.round(ev - buy),\n        return_pct: +((ev / buy - 1) * 100).toFixed(2),\n        day_pnl: prev ? Math.round(out.qty * (last.close - prev.close)) : 0,\n      };\n    })() : {}),\n  },\n};"
+      }
+    },
+    {
+      "id": "n7",
+      "name": "Update metrics",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1760,
+        100
+      ],
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "__SHEET_ID__",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "시트1"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "matchingColumns": [
+            "row_number"
+          ],
+          "schema": [
+            {
+              "id": "name",
+              "displayName": "name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "peak_close",
+              "displayName": "peak_close",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "peak_date",
+              "displayName": "peak_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "last_close",
+              "displayName": "last_close",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "day_change",
+              "displayName": "day_change",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "drawdown",
+              "displayName": "drawdown",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "breach_since",
+              "displayName": "breach_since",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "eval_amount",
+              "displayName": "eval_amount",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "pnl",
+              "displayName": "pnl",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "return_pct",
+              "displayName": "return_pct",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "note",
+              "displayName": "note",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "row_number",
+              "displayName": "row_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "readOnly": true,
+              "removed": false
+            }
+          ],
+          "value": {
+            "row_number": "={{ $json.row_number }}",
+            "name": "={{ $json.name }}",
+            "peak_close": "={{ $json.error ? '' : $json.peak_close }}",
+            "peak_date": "={{ $json.error ? '' : $json.peak_date }}",
+            "last_close": "={{ $json.error ? '' : $json.last_close }}",
+            "day_change": "={{ $json.error || $json.day_change === null ? '' : $json.day_change + '%' }}",
+            "drawdown": "={{ $json.error ? '' : $json.drawdown + '%' }}",
+            "breach_since": "={{ $json.error ? '' : $json.breach_since }}",
+            "eval_amount": "={{ $json.eval_amount ?? '' }}",
+            "pnl": "={{ $json.pnl ?? '' }}",
+            "return_pct": "={{ $json.return_pct == null ? '' : $json.return_pct + '%' }}",
+            "note": "={{ $json.error ? 'ERROR: ' + $json.error : $json.last_date + ' 종가 기준' + ($json.warn ? ' / ' + $json.warn : '') + ' (' + $json.checked_at + ' 확인)' }}"
+          }
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleApi": {
+          "id": "googleSaCred0001",
+          "name": "Google Service Account"
+        }
+      }
+    },
+    {
+      "id": "n8",
+      "name": "Build digest",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        300
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// 전 종목 요약 메일 1통 (모바일 우선 단일 컬럼: 요약 → 손절 상태 → 시장 → 계좌 구성 → 종목 카드)\nconst cfg = $('Config').first().json;\nconst T = Number(cfg.threshold);\nconst now = DateTime.now().setZone('Asia/Seoul');\nconst today = now.toISODate();\nconst items = $input.all().map(i => i.json);\n\nlet manual = false;\ntry { manual = $('Manual Trigger').isExecuted; } catch (e) {}\ntry { manual = manual || $('수동 발송 (webhook)').isExecuted; } catch (e) {}\n// 휴장일(오늘 종가 없음)에는 스케줄 실행 시 발송 안 함\nif (!manual && !items.some(r => r.last_date === today)) return [];\n\nconst ok = items.filter(r => !r.error);\nconst bad = items.filter(r => r.error);\nconst breached = ok.filter(r => r.breached);\nconst fresh = breached.filter(r => r.new_breach);\nconst baseDate = ok.map(r => r.last_date).sort().pop() || today;\n\nconst fmt = n => (n == null ? '-' : Math.round(n).toLocaleString('ko-KR'));\nconst won = n => (n == null ? '-' : (n > 0 ? '+' : '') + Math.round(n).toLocaleString('ko-KR'));\nconst pct = n => (n == null ? '-' : (n > 0 ? '+' : '') + n.toFixed(2) + '%');\nconst md = s => (s || '').slice(5).replace('-', '/');\nconst idx = n => n.toLocaleString('ko-KR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });\nconst arrow = n => (n > 0 ? '▲' : n < 0 ? '▼' : '-');\nconst color = n => (n > 0 ? '#d60000' : n < 0 ? '#0051c7' : '#555');\n\nconst sum = rs => {\n  const h = rs.filter(r => r.eval_amount != null);\n  const buy = h.reduce((a, r) => a + r.buy_amount, 0), ev = h.reduce((a, r) => a + r.eval_amount, 0);\n  const day = h.reduce((a, r) => a + (r.day_pnl || 0), 0);\n  return { n: h.length, buy, ev, pnl: ev - buy, ret: buy ? (ev / buy - 1) * 100 : null, day, dayPct: ev - day ? (day / (ev - day)) * 100 : null };\n};\nconst byOrder = order => (a, b) => (order.indexOf(a) + 1 || 99) - (order.indexOf(b) + 1 || 99);\nconst ORDER = ['일반', 'ISA', '연금'];\nconst ACC_COLOR = { 일반: '#2a78d6', ISA: '#eb6834', 연금: '#1baf7a' }; // 고정 순서, 계좌 구분용\nconst accounts = [...new Set(ok.map(r => r.account))].sort(byOrder(ORDER));\nconst total = sum(ok);\nconst SUB_ORDER = ['IRP', '퇴직연금', '연금저축'];\nconst subOf = r => r.sub_account || '미분류';\n\n// 손절 여유: 고점→손절가 구간 중 남은 비율 (1=고점, 0=손절가)\nconst room = r => Math.max(0, Math.min(1, (r.last_close - r.stop_price) / (r.peak_close - r.stop_price)));\nconst state = r => r.breached ? { c: '#d03b3b', bg: '#fdecec', label: r.new_breach ? '🔴 손절권 신규' : `🔴 손절권 (${md(r.breach_since)}~)` }\n  : room(r) < 0.3 ? { c: '#e09a00', bg: '#fff6e0', label: '⚠️ 주의' }\n  : { c: '#0ca30c', bg: '', label: '' };\n\n// 코스피 (KIS 업종 일봉: 최근 1개월). 실패해도 메일은 발송\nlet kospi = null;\ntry {\n  const k = $('코스피 조회').first().json;\n  if (k.rt_cd === '0') {\n    const marketClosed = now.hour * 60 + now.minute >= 15 * 60 + 30;\n    const bars = (k.output2 || [])\n      .filter(x => x.stck_bsop_date && x.bstp_nmix_prpr)\n      .map(x => ({ date: DateTime.fromFormat(x.stck_bsop_date, 'yyyyMMdd').toISODate(), close: Number(x.bstp_nmix_prpr) }))\n      .filter(b => marketClosed || b.date < today) // 장중 값 제외 (종목 계산과 동일 기준)\n      .reverse();\n    const from = now.minus({ months: 1 }).toISODate();\n    const series = bars.filter(b => b.date >= from);\n    const base = [...bars].reverse().find(b => b.date < from) || series[0];\n    const last = bars[bars.length - 1], prev = bars[bars.length - 2];\n    if (last && prev && series.length > 1) kospi = {\n      last, series,\n      chg: last.close - prev.close,\n      chgPct: (last.close / prev.close - 1) * 100,\n      monthPct: (last.close / base.close - 1) * 100,\n    };\n  }\n} catch (e) {}\n\n// 제목\nconst parts = [];\nif (total.n) parts.push(`오늘 ${won(total.day)} (${pct(total.dayPct)})`);\nparts.push(breached.length ? `🔴 손절권 ${breached.length}` + (fresh.length ? ` (신규 ${fresh.length})` : '') : '✅ 손절권 없음');\nif (bad.length) parts.push(`⚠️ 조회 실패 ${bad.length}`);\nconst subject = `[손절알리미] ${DateTime.fromISO(baseDate).toFormat('MM/dd')} ${parts.join(' · ')}`;\n\n// 공통 스타일\nconst FONT = \"-apple-system,'Apple SD Gothic Neo','Malgun Gothic',sans-serif\";\nconst card = 'width:100%;table-layout:fixed;border-collapse:collapse;background:#fff;border:1px solid #e6e6e3;border-radius:10px;margin:0 0 12px;';\nconst h2 = 'margin:22px 0 8px;font-size:13px;font-weight:bold;color:#52514e;';\nconst muted = 'color:#888;font-size:12px;';\nconst dot = c => `<span style=\"display:inline-block;width:8px;height:8px;border-radius:4px;background:${c};margin-right:6px;\"></span>`;\n\n// 요약 카드 공통 (종합 / 계좌별): 합계 → 오늘·누적 → 도넛 → 표\nconst CAT = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#6250d6', '#e34948']; // 검증된 범주색, 고정 순서\nconst accSums = accounts.map(a => [a, sum(ok.filter(r => r.account === a))]).filter(([, s]) => s.n);\nconst man = n => n >= 1e8 ? (n / 1e8).toFixed(2).replace(/\\.?0+$/, '') + '억' : Math.round(n / 1e4).toLocaleString('ko-KR') + '만';\nconst shareOf = (v, tot) => (w => w.toFixed(w < 1 ? 1 : 0) + '%')(tot ? (v / tot) * 100 : 0);\nconst short = s => (s.length > 7 ? s.slice(0, 6) + '…' : s);\n\n// 도넛: 조각마다 이름+평가금액, 8% 미만 조각은 바깥에 표시, 가운데 합계\nconst donutImg = (slices, centerLabel, tot) => {\n  if (slices.length < 2) return '';\n  const small = slices.map(x => x.value / tot < 0.08);\n  const lbl = slices.map(x => [short(x.label), man(x.value)]);\n  // 함수 포함 설정이라 JSON이 아닌 JS 문자열로 전달 (QuickChart 지원)\n  const cfgJs = `{type:'doughnut',\ndata:{labels:${JSON.stringify(slices.map(x => x.label))},datasets:[{data:${JSON.stringify(slices.map(x => x.value))},\n  backgroundColor:${JSON.stringify(slices.map(x => x.color))},borderColor:'#fff',borderWidth:2}]},\noptions:{cutoutPercentage:40,legend:{display:false},layout:{padding:34},\n  plugins:{doughnutlabel:{labels:[{text:${JSON.stringify(centerLabel)},font:{size:11},color:'#888'},{text:${JSON.stringify(man(tot))},font:{size:15,weight:'bold'},color:'#1a1a1a'}]},\n  datalabels:{\n    formatter:(v,c)=>${JSON.stringify(lbl)}[c.dataIndex],\n    anchor:c=>${JSON.stringify(small)}[c.dataIndex]?'end':'center',\n    align:c=>${JSON.stringify(small)}[c.dataIndex]?'end':'center',\n    offset:4,textAlign:'center',\n    color:c=>${JSON.stringify(small)}[c.dataIndex]?'#333':'#fff',\n    font:{size:12,weight:'bold',lineHeight:1.25}}}}}`;\n  const src = 'https://quickchart.io/chart?w=270&h=270&devicePixelRatio=2&bkg=white&c=' + encodeURIComponent(cfgJs);\n  return `<div style=\"text-align:center;\">\n  <img src=\"${src}\" width=\"270\" height=\"270\" alt=\"${centerLabel} 평가금액 비중: ${slices.map(x => `${x.label} ${fmt(x.value)}원 ${shareOf(x.value, tot)}`).join(', ')}\" style=\"display:inline-block;width:270px;max-width:100%;height:auto;\">\n</div>`;\n};\n\n// 카드 머리: 제목, 평가금액, 오늘 / 누적\nconst cardHead = (title, s, big, extraToday = '') => `\n  <div style=\"${muted}\">${title}</div>\n  <div style=\"font-size:${big ? 28 : 22}px;font-weight:bold;letter-spacing:-0.5px;margin:2px 0 4px;\">${fmt(s.ev)}<span style=\"font-size:${big ? 16 : 14}px;font-weight:normal;\">원</span></div>\n  <table role=\"presentation\" style=\"width:100%;border-collapse:collapse;margin-top:8px;\"><tr>\n    <td style=\"width:50%;vertical-align:top;padding-right:8px;\">\n      <div style=\"${muted}\">오늘</div>\n      <div style=\"font-size:${big ? 17 : 15}px;font-weight:bold;color:${color(s.day)};\">${won(s.day)}</div>\n      <div style=\"font-size:12px;color:${color(s.day)};\">${pct(s.dayPct)}${extraToday}</div>\n    </td>\n    <td style=\"width:50%;vertical-align:top;border-left:1px solid #eee;padding-left:14px;\">\n      <div style=\"${muted}\">누적 평가손익</div>\n      <div style=\"font-size:${big ? 17 : 15}px;font-weight:bold;color:${color(s.pnl)};\">${won(s.pnl)}</div>\n      <div style=\"font-size:12px;color:${color(s.pnl)};\">${pct(s.ret)}<span style=\"color:#888;\"> · 매입 ${fmt(s.buy)}</span></div>\n    </td>\n  </tr></table>\n  <div style=\"border-top:1px solid #eee;margin-top:14px;\"></div>`;\n\nconst numCell = (v, subTxt, c, extra = '') => `<td style=\"padding:8px 0 8px 8px;text-align:right;white-space:nowrap;vertical-align:top;${c ? 'color:' + c + ';' : ''}${extra}\">${v}<div style=\"font-size:11px;${c ? '' : 'color:#888;'}\">${subTxt}</div></td>`;\n\n// 종합 카드 표 (일반 / ISA / 연금 / 전체)\nconst accRow = (label, s, c, strong) => `<tr>\n  <td style=\"padding:9px 0;border-top:1px solid #eee;white-space:nowrap;${strong ? 'font-weight:bold;' : ''}\">${c ? dot(c) : ''}${label}${!strong ? `<span style=\"${muted}margin-left:4px;\">${shareOf(s.ev, total.ev)}</span>` : ''}</td>\n  ${numCell(fmt(s.ev), '매입 ' + fmt(s.buy), null, 'border-top:1px solid #eee;' + (strong ? 'font-weight:bold;' : ''))}\n  ${numCell(won(s.pnl), pct(s.ret), color(s.pnl), 'border-top:1px solid #eee;')}\n  ${numCell(won(s.day), pct(s.dayPct), color(s.day), 'border-top:1px solid #eee;')}\n</tr>`;\nconst accTable = `<table role=\"presentation\" style=\"width:100%;border-collapse:collapse;font-size:14px;\">\n  <tr><td style=\"${muted}padding-bottom:4px;\">계좌</td><td style=\"${muted}text-align:right;\">평가금액</td><td style=\"${muted}text-align:right;\">평가손익</td><td style=\"${muted}text-align:right;\">오늘</td></tr>\n  ${accSums.map(([a, s]) => accRow(a, s, ACC_COLOR[a])).join('')}\n  ${accSums.length > 1 ? accRow('전체', total, null, true) : ''}\n</table>`;\n\nconst vsKospi = kospi && total.dayPct != null && kospi.last.date === baseDate ? total.dayPct - kospi.chgPct : null;\nconst heroHtml = total.n ? `<table role=\"presentation\" style=\"${card}\"><tr><td style=\"padding:18px 18px 16px;\">\n  ${cardHead('총 평가금액', total, true, vsKospi != null ? `<span style=\"color:#888;\"> · 코스피 대비 ${vsKospi > 0 ? '+' : ''}${vsKospi.toFixed(2)}%p</span>` : '')}\n  ${donutImg(accSums.map(([a, s]) => ({ label: a, value: s.ev, color: ACC_COLOR[a] || '#999' })), '총 평가', total.ev)}\n  ${accTable}\n</td></tr></table>` : '';\n\n// 2) 손절 상태 배너\nconst nearest = ok.filter(r => !r.breached && r.stop_price).sort((a, b) => room(a) - room(b))[0];\nconst statusHtml = breached.length\n  ? `<table role=\"presentation\" style=\"${card}border-color:#f3c2c2;background:#fdecec;\"><tr><td style=\"padding:14px 16px;\">\n  <div style=\"font-size:15px;font-weight:bold;color:#b42323;\">🔴 손절권 ${breached.length}종목${fresh.length ? ` (오늘 신규 ${fresh.length})` : ''}</div>\n  ${breached.map(r => `<div style=\"margin-top:6px;font-size:13px;\"><b>${r.name}</b> <span style=\"color:#666;\">${r.account}${r.account === '연금' ? '·' + subOf(r) : ''}</span> · 고점대비 <b style=\"color:${color(r.drawdown)};\">${pct(r.drawdown)}</b> · 손절가 ${fmt(r.stop_price)}${r.new_breach ? ' · <b>신규</b>' : ` · ${md(r.breach_since)}부터`}</div>`).join('')}\n  <div style=\"margin-top:10px;font-size:12px;color:#7a2a2a;\">시간외 종가(15:40~16:00) 또는 시간외 단일가(~18:00)로 당일 매도 가능 · 매도 후 시트 status를 <b>closed</b>로</div>\n</td></tr></table>`\n  : `<table role=\"presentation\" style=\"${card}border-color:#cfe9cf;background:#f1faf1;\"><tr><td style=\"padding:12px 16px;\">\n  <span style=\"font-size:14px;font-weight:bold;color:#0a7a0a;\">✅ 손절권 종목 없음</span>\n  ${nearest ? `<div style=\"font-size:12px;color:#52514e;margin-top:3px;\">손절가에 가장 가까운 종목: <b>${nearest.name}</b> (손절가까지 ${(-nearest.stop_gap).toFixed(1)}% 남음)</div>` : ''}\n</td></tr></table>`;\n\n// 3) 시장 (코스피)\nlet kospiHtml = '';\nif (kospi) {\n  const chart = {\n    type: 'line',\n    data: {\n      labels: kospi.series.map(b => DateTime.fromISO(b.date).toFormat('M/d')),\n      datasets: [{ data: kospi.series.map(b => b.close), borderColor: '#2a78d6', backgroundColor: 'rgba(42,120,214,0.08)', borderWidth: 2, pointRadius: 0, lineTension: 0, fill: 'start' }],\n    },\n    options: {\n      legend: { display: false },\n      layout: { padding: { right: 8 } },\n      scales: {\n        xAxes: [{ gridLines: { display: false }, ticks: { maxTicksLimit: 5, maxRotation: 0, fontSize: 11, fontColor: '#999' } }],\n        yAxes: [{ position: 'right', gridLines: { color: '#f0f0ee', drawBorder: false }, ticks: { maxTicksLimit: 4, fontSize: 11, fontColor: '#999' } }],\n      },\n    },\n  };\n  const src = 'https://quickchart.io/chart?w=560&h=140&devicePixelRatio=2&bkg=white&c=' + encodeURIComponent(JSON.stringify(chart));\n  kospiHtml = `<div style=\"${h2}\">시장</div>\n<table role=\"presentation\" style=\"${card}\"><tr><td style=\"padding:14px 16px 4px;\">\n  <span style=\"font-size:13px;color:#52514e;\">코스피</span>\n  <span style=\"font-size:18px;font-weight:bold;margin-left:6px;\">${idx(kospi.last.close)}</span>\n  <span style=\"font-size:13px;font-weight:bold;color:${color(kospi.chg)};margin-left:4px;\">${arrow(kospi.chg)}${idx(Math.abs(kospi.chg))} (${pct(kospi.chgPct)})</span>\n  <div style=\"${muted}margin-top:2px;\">최근 1개월 <span style=\"color:${color(kospi.monthPct)};\">${pct(kospi.monthPct)}</span></div>\n</td></tr><tr><td style=\"padding:0 6px 8px;\">\n  <img src=\"${src}\" width=\"560\" height=\"140\" alt=\"코스피 최근 1개월 종가 추이\" style=\"display:block;width:100%;max-width:560px;height:auto;\">\n</td></tr></table>`;\n}\n\n// 5) 계좌별 카드 (종합 카드와 같은 형식 + 고점대비 열). 종목은 손절가에 가까운 순\n//    종목 이름은 한 줄 전체, 숫자 4열은 그 아래 줄 (모바일 폭 대응)\nconst sortRisk = rs => [...rs].sort((a, b) => room(a) - room(b));\nconst holdingRows = (r, c) => {\n  const st = state(r);\n  const bg = st.bg ? `background:${st.bg};` : '';\n  return `<tr><td colspan=\"4\" style=\"padding:10px 0 0;border-top:1px solid #eee;${bg}\">\n    <span style=\"font-size:14px;font-weight:bold;padding-left:${bg ? 6 : 0}px;\">${c ? dot(c) : ''}${r.name}</span>\n    <span style=\"${muted}margin-left:4px;\">${fmt(r.qty)}주 · 평단 ${fmt(r.avg_price)} · 종가 ${fmt(r.last_close)}</span>\n    ${r.warn ? `<span style=\"font-size:11px;color:#a60;margin-left:4px;\">⚠️ 고점 확인 필요</span>` : ''}\n  </td></tr>\n  <tr style=\"${bg}font-size:13px;\">\n    ${numCell(fmt(r.eval_amount), '매입 ' + fmt(r.buy_amount), null)}\n    ${numCell(won(r.pnl), pct(r.return_pct), color(r.pnl))}\n    ${numCell(won(r.day_pnl), pct(r.day_change), color(r.day_pnl))}\n    ${numCell(`${st.label ? (r.breached ? '🔴 ' : '⚠️ ') : ''}${pct(r.drawdown)}`, '고점 ' + fmt(r.peak_close), null, `padding-right:${bg ? 6 : 0}px;font-weight:${st.label ? 'bold' : 'normal'};color:${st.label ? st.c : color(r.drawdown)};`)}\n  </tr>`;\n};\nconst accountCard = ([acc, s]) => {\n  const rs = ok.filter(r => r.account === acc && r.eval_amount != null);\n  const pension = acc === '연금';\n  const groups = pension\n    ? [...new Set(rs.map(subOf))].sort(byOrder(SUB_ORDER)).map(g => [g, rs.filter(r => subOf(r) === g)])\n    : [[null, rs]];\n  const subColor = g => CAT[SUB_ORDER.indexOf(g)] || '#999';\n  const holdColor = r => CAT[rs.indexOf(r)] || '#999'; // 시트 순서 고정 (정렬과 무관)\n  const slices = pension\n    ? groups.map(([g, grs]) => ({ label: g, value: sum(grs).ev, color: subColor(g) }))\n    : rs.length <= CAT.length ? rs.map(r => ({ label: r.name, value: r.eval_amount, color: holdColor(r) })) : [];\n  const body = groups.map(([g, grs]) => {\n    const gs = sum(grs);\n    const head = g === null ? '' : `<tr><td colspan=\"4\" style=\"padding:8px 6px;border-top:1px solid #ddd;background:#f6f7f5;font-size:12px;\">\n  ${dot(subColor(g))}<b style=\"color:#333;\">${g}</b><span style=\"color:#888;\"> · ${fmt(gs.ev)}원 ${shareOf(gs.ev, s.ev)} · </span><span style=\"color:${color(gs.pnl)};\">${won(gs.pnl)} (${pct(gs.ret)})</span></td></tr>`;\n    return head + sortRisk(grs).map(r => holdingRows(r, pension ? null : holdColor(r))).join('');\n  }).join('');\n  return `<table role=\"presentation\" style=\"${card}\"><tr><td style=\"padding:16px 18px 12px;\">\n  ${cardHead(`${dot(ACC_COLOR[acc] || '#999')}<b style=\"color:#1a1a1a;font-size:14px;\">${acc} 계좌</b>`, s, false)}\n  ${donutImg(slices, acc, s.ev)}\n  <table role=\"presentation\" style=\"width:100%;table-layout:fixed;border-collapse:collapse;\">\n    <tr><td style=\"${muted}text-align:right;padding-bottom:4px;\">평가금액</td><td style=\"${muted}text-align:right;\">평가손익</td><td style=\"${muted}text-align:right;\">오늘</td><td style=\"${muted}text-align:right;\">고점대비</td></tr>\n    ${body}\n  </table>\n</td></tr></table>`;\n};\nconst holdingsHtml = `<div style=\"${h2}\">계좌별 <span style=\"font-weight:normal;color:#999;\">· 종목은 손절가에 가까운 순</span></div>${accSums.map(accountCard).join('')}`;\n\nconst badHtml = bad.length ? `<p style=\"color:#a60;font-size:13px;\">⚠️ 조회 실패: ${bad.map(r => `${r.name} (${r.error})`).join(', ')}</p>` : '';\nconst noQty = ok.filter(r => r.eval_amount == null);\nconst noQtyHtml = noQty.length ? `<p style=\"color:#a60;font-size:12px;\">수량/평균단가 미입력(손익 제외): ${noQty.map(r => r.name).join(', ')}</p>` : '';\n\nconst html = `<div style=\"background:#f4f4f2;padding:16px 12px;font-family:${FONT};color:#1a1a1a;\">\n<div style=\"max-width:600px;margin:0 auto;\">\n<div style=\"${muted}margin:0 4px 10px;\">${DateTime.fromISO(baseDate).setLocale('ko').toFormat('M월 d일 (EEE)')} 종가 기준 · 고점 대비 ${(T * 100).toFixed(0)}% 이하 = 손절권</div>\n${heroHtml}\n${statusHtml}\n${kospiHtml}\n${holdingsHtml}\n${noQtyHtml}${badHtml}\n<p style=\"color:#999;font-size:11px;line-height:1.6;margin:14px 4px 0;\">고점대비: ⚠️ 주의 = 손절가까지 여유 30% 미만 · 🔴 손절권 = 고점 대비 ${(T * 100).toFixed(0)}% 이하<br>평가손익은 수수료·세금 제외 · <a href=\"${cfg.sheet_url}\" style=\"color:#2a78d6;\">시트 열기</a></p>\n</div></div>`;\n\nconst text = [\n  `${baseDate} 종가 기준 (고점 대비 ${(T * 100).toFixed(0)}% 이하 = 손절권)`,\n  total.n ? `총 평가 ${fmt(total.ev)} / 오늘 ${won(total.day)} (${pct(total.dayPct)}) / 누적 손익 ${won(total.pnl)} (${pct(total.ret)})` : '',\n  breached.length ? `🔴 손절권: ${breached.map(r => `${r.name} ${pct(r.drawdown)}`).join(', ')}` : '✅ 손절권 없음',\n  kospi ? `코스피 ${idx(kospi.last.close)} ${arrow(kospi.chg)} ${idx(Math.abs(kospi.chg))} (${pct(kospi.chgPct)}) · 1개월 ${pct(kospi.monthPct)}` : '',\n  ...accounts.flatMap(a => {\n    const rs = sortRisk(ok.filter(r => r.account === a)), s = sum(rs);\n    return ['', `[${a} 계좌]` + (s.n ? ` 평가 ${fmt(s.ev)} / 손익 ${won(s.pnl)} (${pct(s.ret)})` : ''),\n      ...rs.map(r => `${r.breached ? '🔴' : '  '} ${a === '연금' ? `[${subOf(r)}] ` : ''}${r.name}  종가 ${fmt(r.last_close)} (${pct(r.day_change)}) | 손익 ${won(r.pnl)} (${pct(r.return_pct)}) | 고점대비 ${pct(r.drawdown)} | 손절가 ${fmt(r.stop_price)} ${state(r).label}`)];\n  }),\n  ...(bad.length ? ['', '조회 실패: ' + bad.map(r => `${r.name} (${r.error})`).join(', ')] : []),\n  '', cfg.sheet_url,\n].join('\\n');\n\nreturn [{ json: { subject, html, text } }];\n"
+      }
+    },
+    {
+      "id": "n9",
+      "name": "요약 메일",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        1980,
+        300
+      ],
+      "parameters": {
+        "fromEmail": "손절알리미 <__GMAIL_ADDRESS__>",
+        "toEmail": "__ALERT_TO__",
+        "subject": "={{ $json.subject }}",
+        "emailFormat": "both",
+        "text": "={{ $json.text }}",
+        "html": "={{ $json.html }}",
+        "options": {}
+      },
+      "credentials": {
+        "smtp": {
+          "id": "gmailSmtpCred001",
+          "name": "Gmail SMTP"
+        }
+      }
+    },
+    {
+      "id": "n2w",
+      "name": "수동 발송 (webhook)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        500
+      ],
+      "webhookId": "6f1c2d9e-dont-stock-run",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "dont-stock-run",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "notes": "서버 내부 전용 (포트가 127.0.0.1에만 열림): ssh dont-stock 'curl -X POST localhost:5678/webhook/dont-stock-run'"
+    },
+    {
+      "id": "kospiIndex000001",
+      "name": "코스피 조회",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        200
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('Config').first().json.kis_base }}/uapi/domestic-stock/v1/quotations/inquire-daily-indexchartprice",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "FID_COND_MRKT_DIV_CODE",
+              "value": "U"
+            },
+            {
+              "name": "FID_INPUT_ISCD",
+              "value": "0001"
+            },
+            {
+              "name": "FID_INPUT_DATE_1",
+              "value": "={{ $now.setZone('Asia/Seoul').minus({ days: 45 }).toFormat('yyyyMMdd') }}"
+            },
+            {
+              "name": "FID_INPUT_DATE_2",
+              "value": "={{ $now.setZone('Asia/Seoul').toFormat('yyyyMMdd') }}"
+            },
+            {
+              "name": "FID_PERIOD_DIV_CODE",
+              "value": "D"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "authorization",
+              "value": "=Bearer {{ $('KIS 토큰').first().json.access_token }}"
+            },
+            {
+              "name": "tr_id",
+              "value": "FHKUP03500100"
+            },
+            {
+              "name": "custtype",
+              "value": "P"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "kisHeaders000001",
+          "name": "KIS headers"
+        }
+      },
+      "executeOnce": true,
+      "notes": "코스피 최근 1개월 일봉 (메일 상단 카드용). 실패해도 메일은 발송"
+    }
+  ],
+  "connections": {
+    "평일 15:35": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "KIS 토큰",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "KIS 토큰": {
+      "main": [
+        [
+          {
+            "node": "코스피 조회",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get active rows": {
+      "main": [
+        [
+          {
+            "node": "Prepare",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare": {
+      "main": [
+        [
+          {
+            "node": "KIS 일봉 조회",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "KIS 일봉 조회": {
+      "main": [
+        [
+          {
+            "node": "Calculate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate": {
+      "main": [
+        [
+          {
+            "node": "Update metrics",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Build digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build digest": {
+      "main": [
+        [
+          {
+            "node": "요약 메일",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "수동 발송 (webhook)": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "코스피 조회": {
+      "main": [
+        [
+          {
+            "node": "Get active rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Seoul",
+    "errorWorkflow": "errorNotify00001"
+  }
+}

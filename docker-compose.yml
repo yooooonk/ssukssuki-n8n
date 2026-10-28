@@ -1,0 +1,20 @@
+services:
+  n8n:
+    # 버전 고정. 업그레이드 시 태그만 바꾸고 docker compose up -d
+    image: n8nio/n8n:2.12.2
+    container_name: dont-stock-n8n
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5678:5678"         # 외부 노출 X. 서버에선 SSH 터널로 접속
+    env_file:
+      - .env
+    environment:
+      - GENERIC_TIMEZONE=Asia/Seoul   # Schedule Trigger 기준 시간대
+      - TZ=Asia/Seoul
+      - N8N_DIAGNOSTICS_ENABLED=false
+    volumes:
+      - n8n_data:/home/node/.n8n      # 워크플로우·credential 저장
+      - ./workflows:/workflows        # import/export용 JSON 공유 폴더
+
+volumes:
+  n8n_data:

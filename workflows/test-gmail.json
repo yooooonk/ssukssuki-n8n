@@ -1,0 +1,59 @@
+{
+  "id": "testGmailAlert01",
+  "name": "[TEST] Gmail 알림 테스트",
+  "active": false,
+  "nodes": [
+    {
+      "id": "a1",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "a2",
+      "name": "Send Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        260,
+        0
+      ],
+      "parameters": {
+        "fromEmail": "손절알리미 <__GMAIL_ADDRESS__>",
+        "toEmail": "__ALERT_TO__",
+        "subject": "[dont-stock] 테스트 알림",
+        "emailFormat": "text",
+        "text": "n8n → Gmail 알림 테스트입니다.\n발송 시각: {{ $now.toFormat('yyyy-MM-dd HH:mm:ss') }}",
+        "options": {}
+      },
+      "credentials": {
+        "smtp": {
+          "id": "gmailSmtpCred001",
+          "name": "Gmail SMTP"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Send Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Seoul"
+  }
+}

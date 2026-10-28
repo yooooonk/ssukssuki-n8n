@@ -1,0 +1,59 @@
+{
+  "id": "errorNotify00001",
+  "name": "실패 알림 (Error Workflow)",
+  "active": false,
+  "nodes": [
+    {
+      "id": "e1",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "e2",
+      "name": "실패 메일",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        260,
+        0
+      ],
+      "parameters": {
+        "fromEmail": "손절알리미 <__GMAIL_ADDRESS__>",
+        "toEmail": "__ALERT_TO__",
+        "subject": "=[손절알리미 오류] {{ $json.workflow.name }} 실행 실패",
+        "emailFormat": "text",
+        "text": "=n8n 워크플로우 실행이 실패했습니다. 오늘 손절 체크가 누락됐을 수 있습니다.\n\n- 워크플로우: {{ $json.workflow.name }}\n- 실패 노드: {{ $json.execution.lastNodeExecuted }}\n- 오류: {{ $json.execution.error.message }}\n- 시각: {{ $now.toFormat('yyyy-MM-dd HH:mm') }}\n- 실행 기록: {{ $json.execution.url }}\n\n흔한 원인: 맥이 회사 네트워크에 연결됨(인증서/차단), Yahoo API 일시 장애, 구글 키 만료.",
+        "options": {}
+      },
+      "credentials": {
+        "smtp": {
+          "id": "gmailSmtpCred001",
+          "name": "Gmail SMTP"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "실패 메일",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Seoul"
+  }
+}
